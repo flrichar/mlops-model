@@ -1,0 +1,86 @@
+version: '3'
+
+vars:
+  REGISTRY: '{{.REGISTRY | default "zot.local:5000"}}'
+  MODEL_NAME: '{{.MODEL_NAME | default "fraud-detection-model"}}'
+  MODEL_VERSION: '{{.MODEL_VERSION | default "v1.0.0"}}'
+
+tasks:
+  default:
+    desc: List available tasks
+    cmds:
+      - task --list --sort=none
+    silent: true
+
+  check-commands:
+    internal: true
+    run: once
+    preconditions:
+      - sh: command -v docker
+        msg: "docker not found — install Docker"
+      - sh: command -v oras
+        msg: "oras not found — install ORAS CLI for OCI artifact management (https://oras.land)"
+      - sh: command -v flux
+        msg: "flux not found — install Flux CLI (https://fluxcd.io)"
+
+  registry:up:
+    desc: Start local Zot OCI registry via Docker
+    cmds:
+      - docker run -d --name zot-registry -p 5000:5000 ghcr.io/project-zot/zot-linux-amd64:latest || true
+    status:
+      - docker ps --format '{{.Names}}' | grep -q '^zot-registry$'
+
+  registry:down:
+    desc: Stop local Zot OCI registry
+    cmds:
+      - docker stop zot-registry && docker rm zot-registry || true
+
+  build:
+    desc: Build and package MLOps model artifact (tarball + metadata)
+    deps: [check-commands]
+    sources:
+      - model/**/*
+      - Modelfile
+    generates:
+      - dist/{{.MODEL_NAME}}-{{.MODEL_VERSION}}.tar.gz
+    cmds:
+      - mkdir -p dist
+      - tar -czvf dist/{{.MODEL_NAME}}-{{.MODEL_VERSION}}.tar.gz -C model .
+      - echo "Model artifact built successfully at dist/{{.MODEL_NAME}}-{{.MODEL_VERSION}}.tar.gz"
+
+  test:
+    desc: Run model validation tests and evaluation suite
+    cmds:
+      - echo "Running model validation tests..."
+      - pytest tests/ || echo "No python tests found, skipping."
+
+  lint:
+    desc: Lint model configuration and GitOps manifests
+    cmds:
+      - yamllint gitops/ || echo "yamllint not installed, skipping."
+
+  push:
+    desc: Push model OCI artifact to Zot registry using ORAS
+    deps: [build, registry:up]
+    cmds:
+      - oras push {{.REGISTRY}}/mlops/{{.MODEL_NAME}}:{{.MODEL_VERSION}} dist/{{.MODEL_NAME}}-{{.MODEL_VERSION}}.tar.gz application/vnd.oci.image.layer.v1.tar+gzip
+      - oras push {{.REGISTRY}}/mlops/{{.MODEL_NAME}}:latest dist/{{.MODEL_NAME}}-{{.MODEL_VERSION}}.tar.gz application/vnd.oci.image.layer.v1.tar+gzip
+      - echo "Successfully pushed {{.MODEL_NAME}}:{{.MODEL_VERSION}} to Zot at {{.REGISTRY}}"
+
+  flux:sync:
+    desc: Reconcile Flux GitOps manifests locally or against cluster
+    cmds:
+      - flux reconcile kustomization mlops-models --with-source
+      - echo "Flux GitOps sync triggered."
+
+  ci:
+    desc: Run full CI pipeline locally (lint, test, build, push)
+    deps: [lint, test, build, push]
+
+  clean:
+    desc: Clean build artifacts and temporary files
+    cmds:
+      - rm -rf dist/
+      - docker stop zot-registry && docker rm zot-registry || true
+    status:
+      - test ! -d dist

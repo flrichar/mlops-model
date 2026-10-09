@@ -1,0 +1,84 @@
+name: MLOps CI/CD with Flux & Zot
+
+on:
+  push:
+    branches: [main, master]
+    tags: ['v*']
+  pull_request:
+    branches: [main, master]
+
+env:
+  ZOT_REGISTRY: zot.internal.net:5000
+  MODEL_NAME: fraud-detection-model
+
+jobs:
+  validate-and-build:
+    name: Validate, Build & Push Model to Zot
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Go-Task
+        uses: arduino/setup-task@v2
+        with:
+          version: latest
+
+      - name: Setup ORAS CLI
+        uses: oras-project/setup-oras@v1
+        with:
+          version: latest
+
+      - name: Set Model Version
+        id: meta
+        run: |
+          if [[ "${{ github.ref }}" == refs/tags/* ]]; then
+            echo "VERSION=${{ github.ref_name }}" >> $GITHUB_OUTPUT
+          else
+            echo "VERSION=v0.1.0-${{ github.sha }}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Run Lint and Tests
+        run: task lint test
+
+      - name: Build Model Artifact
+        run: task build MODEL_VERSION=${{ steps.meta.outputs.VERSION }}
+
+      - name: Start Zot Registry (for CI integration test)
+        run: task registry:up
+
+      - name: Push Artifact to Zot Registry
+        run: |
+          # If pushing to a secure internal Zot in real CI, configure auth here
+          oras login ${{ env.ZOT_REGISTRY }} -u ${{ secrets.ZOT_USER }} -p ${{ secrets.ZOT_PASSWORD }} || true
+          task push MODEL_VERSION=${{ steps.meta.outputs.VERSION }} REGISTRY=${{ env.ZOT_REGISTRY }}
+
+  gitops-update:
+    name: Update Flux GitOps Manifests
+    needs: validate-and-build
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set Model Version
+        id: meta
+        run: |
+          if [[ "${{ github.ref }}" == refs/tags/* ]]; then
+            echo "VERSION=${{ github.ref_name }}" >> $GITHUB_OUTPUT
+          else
+            echo "VERSION=v0.1.0-${{ github.sha }}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Update Flux OCIRepository / Image Tag in GitOps Manifests
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          
+          # Update tag in gitops/model-oci.yaml
+          sed -i 's|tag:.*|tag: ${{ steps.meta.outputs.VERSION }}|g' gitops/model-oci.yaml
+          
+          git add gitops/model-oci.yaml
+          git commit -m "chore(flux): update model ${{ env.MODEL_NAME }} tag to ${{ steps.meta.outputs.VERSION }}" || echo "No changes to commit"
+          git push

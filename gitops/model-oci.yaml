@@ -1,0 +1,28 @@
+apiVersion: source.toolkit.fluxcd.io/v1beta2
+kind: OCIRepository
+metadata:
+  name: fraud-detection-model
+  namespace: mlops-system
+spec:
+  interval: 1m
+  url: oci://zot.internal.net:5000/mlops/fraud-detection-model
+  ref:
+    tag: v1.0.0
+  provider: generic
+  secretRef:
+    name: zot-registry-secret
+---
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: fraud-detection-deployment
+  namespace: mlops-system
+spec:
+  interval: 5m
+  sourceRef:
+    kind: OCIRepository
+    name: fraud-detection-model
+  path: "./deploy"
+  prune: true
+  wait: true
+  timeout: 2m

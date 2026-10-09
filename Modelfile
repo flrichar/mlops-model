@@ -1,0 +1,6 @@
+# MLOps Model Definition
+MODEL_NAME: fraud-detection-model
+FRAMEWORK: onnx
+INPUT_SHAPE: [1, 28]
+OUTPUT_SHAPE: [1, 1]
+DESCRIPTION: "Fraud detection inference model packaged as OCI artifact for Zot & Flux."
